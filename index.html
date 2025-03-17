@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Карта России - Highcharts</title>
+    <!-- Подключаем скрипты Highcharts -->
+    <script src="https://code.highcharts.com/maps/highmaps.js"></script>
+    <script src="https://code.highcharts.com/maps/modules/exporting.js"></script>
+    <style>
+        #container {
+            width: 100%;
+            height: 600px;
+            margin: 0 auto;
+        }
+        .loading {
+            margin-top: 10px;
+            text-align: center;
+        }
+        .log {
+            margin: 20px auto;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+            max-width: 90%;
+            height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div class="loading">Загрузка карты...</div>
+    <div class="log" id="log"></div>
+
+    <script>
+        /**
+         * Сопоставление регионов из regions.ts с регионами из GeoJSON-файла rus_simple_highcharts.geo.json
+         * Ключ - название региона из regions.ts
+         * Значение - название региона из GeoJSON или null, если соответствие не найдено
+         */
+        const REGION_MAPPING = {
+            'Белгородская область': 'Белгородская область',
+            'Брянская область': 'Брянская область',
+            'Волгоградская область': 'Волгоградская область',
+            'Воронежская область': 'Воронежская область',
+            'Северный Кавказ': null, // Комплексный регион, не имеет прямого соответствия
+            'Калужская область': 'Калужская область',
+            'Краснодарский край': 'Краснодарский край',
+            'Курская область': 'Курская область',
+            'Ленинградская область': 'Ленинградская область',
+            'Липецкая область': 'Липецкая область',
+            'Москва и Московская область': null, // Комбинированный регион
+            'Новгородская область': 'Новгородская область',
+            'Орловская область': 'Орловская область',
+            'Псковская область': 'Псковская область',
+            'Республика Калмыкия': 'Республика Калмыкия',
+            'Республика Карелия': 'Республика Карелия',
+            'Республика Крым и Севастополь': null, // Комбинированный регион
+            'Ростовская область': 'Ростовская область',
+            'Смоленская область': 'Смоленская область',
+            'Ставропольский край': 'Ставропольский край',
+            'Тверская область': 'Тверская область',
+            'Тульская область': 'Тульская область',
+            'Калининградская область': 'Калининградская область',
+            'Кабардино-Балкарская Республика': 'Кабардино-Балкарская Республика',
+            'Карачаево-Черкесская Республика': 'Карачаево-Черкесская Республика',
+            'Донецкая народная республика': 'Донецкая Народная Республика',
+            'Луганская народная республика': 'Луганская Народная Республика',
+            'Херсонская область': 'Херсонская область',
+            'Запорожская область': 'Запорожская область',
+            'Республика Адыгея': 'Республика Адыгея',
+            'Севастополь': 'Севастополь',
+
+            // Вспомогательные сопоставления для комбинированных регионов
+            'Москва': 'Москва',
+            'Московская область': 'Московская область',
+            'Республика Крым': 'Республика Крым',
+
+            // Сопоставления для укороченных идентификаторов
+            'ДНР': 'Донецкая Народная Республика',
+            'ЛНР': 'Луганская Народная Республика'
+        };
+
+        /**
+         * Сопоставление регионов из GeoJSON с их кодами hc-key
+         * Полезно для точного определения региона по коду на карте
+         */
+        const REGION_HC_KEYS = {
+            // Будет заполнено при загрузке GeoJSON
+        };
+
+        /**
+         * Функция для получения hc-key региона по его названию из regions.ts
+         * @param {string} regionName - Название региона из regions.ts
+         * @returns {string|null} - hc-key региона или null, если регион не найден
+         */
+        function getRegionHcKey(regionName) {
+            const geoJsonRegionName = REGION_MAPPING[regionName];
+            if (!geoJsonRegionName) return null;
+
+            return REGION_HC_KEYS[geoJsonRegionName] || null;
+        }
+
+        /**
+         * Функция для инициализации маппинга hc-key
+         * @param {Object} geoJsonData - Данные GeoJSON
+         */
+        function initRegionHcKeys(geoJsonData) {
+            if (!geoJsonData || !geoJsonData.features) return;
+
+            geoJsonData.features.forEach(feature => {
+                const properties = feature.properties;
+                if (properties && properties.name && properties['hc-key']) {
+                    REGION_HC_KEYS[properties.name] = properties['hc-key'];
+                }
+            });
+        }
+
+        // Основной код для карты
+        let chart;
+        let allRegionsData = [];
+        const logElement = document.getElementById('log');
+
+        // Функция для добавления записи в лог
+        function log(message) {
+            if (!logElement) return;
+            logElement.innerHTML += message + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        // Функция для загрузки GeoJSON данных
+        async function loadMap() {
+            try {
+                const response = await fetch('rus_simple_highcharts.geo.json');
+                const geojson = await response.json();
+
+                // После загрузки данных скрываем индикатор загрузки
+                document.querySelector('.loading').style.display = 'none';
+
+                // Инициализируем маппинг hc-key
+                initRegionHcKeys(geojson);
+
+                // Логируем информацию о регионах
+                log('Сопоставление регионов:');
+                let matchCount = 0;
+                let missingCount = 0;
+
+                // Получаем ключи из объекта REGION_MAPPING (избранные регионы)
+                const featuredRegionNames = Object.keys(REGION_MAPPING).filter(key =>
+                    // Исключаем вспомогательные ключи (те, что не являются избранными регионами)
+                    !key.startsWith('region_') &&
+                    key !== 'Москва' &&
+                    key !== 'Московская область' &&
+                    key !== 'Республика Крым' &&
+                    key !== 'ДНР' &&
+                    key !== 'ЛНР'
+                );
+
+                featuredRegionNames.forEach(regionName => {
+                    const geoJsonName = REGION_MAPPING[regionName];
+                    const hcKey = getRegionHcKey(regionName);
+
+                    if (geoJsonName && hcKey) {
+                        log(`✓ ${regionName} -> ${geoJsonName} (hc-key: ${hcKey})`);
+                        matchCount++;
+                    } else if (geoJsonName) {
+                        log(`⚠ ${regionName} -> ${geoJsonName} (hc-key не найден)`);
+                        missingCount++;
+                    } else {
+                        log(`✗ ${regionName} -> не найдено соответствие`);
+                        missingCount++;
+                    }
+                });
+
+                log(`\nИтого: найдено ${matchCount} соответствий, не найдено ${missingCount}`);
+
+                // Получаем список регионов из GeoJSON и генерируем данные
+                allRegionsData = geojson.features.map(feature => {
+                    const regionName = feature.properties.name || feature.properties.NAME_RU || 'Регион';
+
+                    // Проверяем, входит ли регион в список избранных через обратный маппинг
+                    const isFeatured = Object.values(REGION_MAPPING).includes(regionName);
+
+                    return {
+                        'hc-key': feature.properties['hc-key'],
+                        value: isFeatured ? 100 : 20, // Разные значения для избранных и обычных регионов
+                        name: regionName,
+                        isFeatured: isFeatured
+                    };
+                });
+
+                // Инициализируем карту с полным набором данных
+                initializeChart(geojson, allRegionsData);
+            } catch (error) {
+                console.error('Ошибка при загрузке карты:', error);
+                document.querySelector('.loading').textContent = 'Ошибка при загрузке карты';
+                log(`Ошибка: ${error.message}`);
+            }
+        }
+
+        // Функция для инициализации карты
+        function initializeChart(geojson, data) {
+            chart = Highcharts.mapChart('container', {
+                chart: {
+                    map: geojson
+                },
+                title: {
+                    text: 'Карта России'
+                },
+                subtitle: {
+                    text: 'Выделены избранные регионы'
+                },
+                mapNavigation: {
+                    enabled: true,
+                    buttonOptions: {
+                        verticalAlign: 'bottom'
+                    }
+                },
+                colorAxis: {
+                    min: 0,
+                    max: 100,
+                    minColor: '#E6E7E8',
+                    maxColor: '#005645',
+                    stops: [
+                        [0, '#E6E7E8'],    // обычные регионы - светло-серые
+                        [0.2, '#E6E7E8'],
+                        [0.5, '#BADA55'],   // избранные регионы - зеленые
+                        [1, '#005645']      // избранные регионы - темно-зеленые
+                    ]
+                },
+                tooltip: {
+                    formatter: function() {
+                        const isFeatured = this.point.isFeatured;
+                        const status = isFeatured ? 'Избранный регион' : 'Обычный регион';
+                        return `<b>${this.point.name}</b><br>Статус: ${status}`;
+                    }
+                },
+                series: [{
+                    data: data,
+                    name: 'Регион',
+                    states: {
+                        hover: {
+                            color: '#BADA55'
+                        }
+                    },
+                    dataLabels: {
+                        enabled: false,
+                        format: '{point.name}'
+                    },
+                    // Всегда отображаем все регионы
+                    allAreas: true,
+                    joinBy: 'hc-key'
+                }]
+            });
+        }
+
+        // Вызываем функцию загрузки карты при загрузке страницы
+        document.addEventListener('DOMContentLoaded', loadMap);
+    </script>
+</body>
+</html>
